@@ -9,23 +9,33 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include <signal.h> // Добавили заголовочный файл для работы с сигналами
 #include "find_min_max.h"
 #include "utils.h"
+
+volatile sig_atomic_t timeout_flag = 0; // Глобальная переменная для отслеживания таймаута
+
+void timeout_handler(int signo) {
+    timeout_flag = 1; // Функция обработчика сигнала
+}
 
 int main(int argc, char **argv) {
   int seed = -1;
   int array_size = -1;
   int pnum = -1;
   bool with_files = false;
+  int timeout = -1; // Переменная для хранения таймаута
 
   while (true) {
     int current_optind = optind ? optind : 1;
 
-    static struct option options[] = {{"seed", required_argument, 0, 0},
-                                      {"array_size", required_argument, 0, 0},
-                                      {"pnum", required_argument, 0, 0},
-                                      {"by_files", no_argument, 0, 'f'},
-                                      {0, 0, 0, 0}};
+    static struct option options[] = {
+        {"seed", required_argument, 0, 0},
+        {"array_size", required_argument, 0, 0},
+        {"pnum", required_argument, 0, 0},
+        {"by_files", no_argument, 0, 'f'},
+        {"timeout", required_argument, 0, 0}, // Добавили опцию для указания таймаута
+        {0, 0, 0, 0}};
 
     int option_index = 0;
     int c = getopt_long(argc, argv, "f", options, &option_index);
@@ -46,6 +56,13 @@ int main(int argc, char **argv) {
             break;
           case 3:
             with_files = true;
+            break;
+          case 4: // Обработка таймаута
+            timeout = atoi(optarg);
+            if (timeout > 0) {
+                signal(SIGALRM, timeout_handler); // Устанавливаем обработчик сигнала
+                alarm(timeout); // Устанавливаем таймер таймаута
+            }
             break;
           default:
             printf("Index %d is out of options\n", option_index);
@@ -76,6 +93,7 @@ int main(int argc, char **argv) {
 
   int active_child_processes = 0;
   int **pipes = (int **)malloc(sizeof(int *) * pnum);
+  pid_t *child_pids = (pid_t *)malloc(sizeof(pid_t) * pnum); // Массив PID дочерних процессов
 
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
@@ -111,6 +129,9 @@ int main(int argc, char **argv) {
         }
         return 0;
       }
+      else {
+        child_pids[i] = child_pid; // Сохраняем PID дочернего процесса
+      }
     } else {
       printf("Fork failed!\n");
       return 1;
@@ -119,6 +140,14 @@ int main(int argc, char **argv) {
 
   while (active_child_processes > 0) {
     int status;
+    if (timeout_flag) {
+        // Timeout has occurred, send SIGKILL to child processes
+        for (int i = 0; i < pnum; i++) {
+            if (child_pids[i] > 0) {
+                kill(child_pids[i], SIGKILL);
+            }
+        }
+    }
     wait(&status);
     active_child_processes -= 1;
   }
@@ -158,6 +187,7 @@ int main(int argc, char **argv) {
     free(pipes[i]);
   }
   free(pipes);
+  free(child_pids);
 
   printf("Min: %d\n", min_max.min);
   printf("Max: %d\n", min_max.max);
